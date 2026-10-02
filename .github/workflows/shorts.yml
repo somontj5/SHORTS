@@ -1,0 +1,35 @@
+name: shorts
+on:
+  schedule:
+    - cron: "0 5,11,17 * * *"   # 10:00, 16:00 и 22:00 по Таджикистану (UTC+5)
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: shorts
+  cancel-in-progress: false
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install ffmpeg and fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-dejavu-core
+      - run: pip install telethon requests pillow
+      - run: python shorts.py
+        env:
+          API_ID: ${{ secrets.API_ID }}
+          API_HASH: ${{ secrets.API_HASH }}
+          TG_SESSION: ${{ secrets.TG_SESSION }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TARGET_CHANNEL: ${{ secrets.TARGET_CHANNEL }}
+          CHANNEL_HANDLE: ${{ secrets.CHANNEL_HANDLE }}
+          SHORTS_CHAT: ${{ secrets.SHORTS_CHAT }}
+      - name: save state
+        run: |
+          git config user.name "bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add shorts_state.json
+          git diff --staged --quiet || (git commit -m "shorts state" && git pull --rebase && git push)
