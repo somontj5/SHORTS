@@ -16,7 +16,9 @@ jobs:
       - name: install ffmpeg and fonts
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-dejavu-core
+          sudo apt-get install -y ffmpeg fonts-dejavu-core fontconfig
+          for p in fonts-montserrat fonts-open-sans fonts-ubuntu; do sudo apt-get install -y $p || true; done
+          fc-cache -f
       - run: pip install telethon requests pillow
       - run: python shorts.py
         env:
