@@ -19,8 +19,16 @@ MAX_FAILS = 3
 STATE = "shorts_state.json"
 WORK = "work"
 W, H, FPS = 1080, 1920, 25
-FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+# --- оформление карточки ---
+TITLE_FONT = "Montserrat:bold"      # шрифт заголовка: «семейство:начертание»
+TEXT_FONT = "Open Sans:semibold"    # шрифт пунктов
+CTA_FONT = "Montserrat:bold"        # шрифт плашки с призывом
+ACCENT = (255, 196, 0)              # фирменный цвет (R, G, B)
+FALLBACK_FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+# Свой шрифт: положи файлы fonts/title.ttf и fonts/text.ttf в репозиторий, и они заменят шрифты выше.
+SAFE_TOP = 190       # сверху YouTube закрывает интерфейсом
+SAFE_BOTTOM = 360    # снизу закрывают название, описание и музыка
+COLUMN_W = 880       # ширина центральной колонки
 
 PROMPT = (
     "Ты редактор канала про Minecraft Bedrock. По тексту поста сделай текст для вертикального "
@@ -82,6 +90,32 @@ def gemini_json(text):
 
 # ---------- карточка ----------
 
+_font_cache = {}
+
+
+def get_font(kind, size):
+    spec, custom = {
+        "title": (TITLE_FONT, "fonts/title.ttf"),
+        "text": (TEXT_FONT, "fonts/text.ttf"),
+        "cta": (CTA_FONT, "fonts/title.ttf"),
+    }[kind]
+    if os.path.exists(custom):
+        path = custom
+    else:
+        if spec not in _font_cache:
+            try:
+                out = subprocess.run(["fc-match", "-f", "%{file}", spec],
+                                     capture_output=True, text=True).stdout.strip()
+            except Exception:
+                out = ""
+            _font_cache[spec] = out if out and os.path.exists(out) else FALLBACK_FONT
+        path = _font_cache[spec]
+    try:
+        return ImageFont.truetype(path, size)
+    except Exception:
+        return ImageFont.truetype(FALLBACK_FONT, size)
+
+
 def clean(s):
     s = re.sub(r"https?://\S+|@\w+", "", s or "")
     s = "".join(ch for ch in s if ch.isalnum() or ch in " .,:;!?-—–+()/%'\"«»№&*•…")
@@ -105,58 +139,107 @@ def wrap(draw, text, font, max_w):
 
 def render_card(photo_path, title, bullets, handle, out_png):
     img = Image.open(photo_path).convert("RGB")
-    bg = ImageOps.fit(img, (W, H), method=Image.LANCZOS).filter(ImageFilter.GaussianBlur(40))
-    canvas = ImageEnhance.Brightness(bg).enhance(0.45)
-    d = ImageDraw.Draw(canvas)
+    bg = ImageOps.fit(img, (W, H), method=Image.LANCZOS).filter(ImageFilter.GaussianBlur(45))
+    canvas = ImageEnhance.Brightness(bg).enhance(0.40).convert("RGBA")
+    measure = ImageDraw.Draw(canvas)
 
-    # заголовок
-    size = 84
+    CW = COLUMN_W
+    X0 = (W - CW) // 2
+    PAD, GAP = 34, 34
+
+    # --- заголовок
+    size = 74
     while True:
-        f = ImageFont.truetype(FONT_BOLD, size)
-        lines = wrap(d, title, f, W - 120)
-        if len(lines) <= 3 or size <= 56:
+        ft = get_font("title", size)
+        t_lines = wrap(measure, title, ft, CW - 2 * PAD)
+        if len(t_lines) <= 3 or size <= 48:
             break
-        size -= 8
-    y = 110
-    for ln in lines[:3]:
-        d.text((60, y), ln, font=f, fill="white")
-        y += int(size * 1.2)
+        size -= 6
+    t_lines = t_lines[:3]
+    lh_t = int(size * 1.22)
+    title_h = len(t_lines) * lh_t + 2 * PAD
+
+    # --- пункты (каждый на своей плашке)
+    fb = get_font("text", 40)
+    b_lines = [wrap(measure, b, fb, CW - 2 * PAD)[:2] for b in bullets[:3]]
+    lh_b, pad_b, gap_b = 52, 26, 18
+    b_heights = [len(ls) * lh_b + 2 * pad_b for ls in b_lines]
+    bullets_h = sum(b_heights) + gap_b * max(0, len(b_heights) - 1)
+
+    # --- плашка с призывом
+    cta_h = 130
+    n_gaps = 3 if b_heights else 2
+    fixed = title_h + bullets_h + cta_h + n_gaps * GAP
+
+    # --- фото занимает всё оставшееся место
+    avail = (H - SAFE_BOTTOM) - SAFE_TOP
+    ph = img.copy()
+    ph.thumbnail((CW - 24, max(300, min(780, avail - fixed - 16))), Image.LANCZOS)
+    photo_h = ph.size[1] + 16
+    stack_h = fixed + photo_h
+    y = SAFE_TOP + max(0, (avail - stack_h) // 2)
+
+    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    od = ImageDraw.Draw(overlay)
+    dark = (15, 15, 25, 215)
+
+    # плашка заголовка
+    title_y = y
+    od.rounded_rectangle((X0, y, X0 + CW, y + title_h), radius=36, fill=dark,
+                         outline=ACCENT + (255,), width=5)
+    y += title_h + GAP
+
+    # рамка под фото
+    photo_y = y
+    px = (W - ph.size[0]) // 2
+    od.rounded_rectangle((px - 8, y, px + ph.size[0] + 8, y + photo_h), radius=40,
+                         fill=(255, 255, 255, 235))
+    y += photo_h + GAP
+
+    # плашки пунктов
+    bullet_ys = []
+    for h in b_heights:
+        od.rounded_rectangle((X0, y, X0 + CW, y + h), radius=30, fill=(15, 15, 25, 205),
+                             outline=(255, 255, 255, 110), width=3)
+        bullet_ys.append(y)
+        y += h + gap_b
+    y += GAP - gap_b if b_heights else 0
+
+    # плашка призыва
+    cta_y = y
+    od.rounded_rectangle((X0, y, X0 + CW, y + cta_h), radius=40, fill=ACCENT + (255,))
+
+    canvas = Image.alpha_composite(canvas, overlay)
 
     # фото со скруглёнными углами
-    ph = img.copy()
-    ph.thumbnail((960, 820), Image.LANCZOS)
-    fb = ImageFont.truetype(FONT, 44)
-    blocks = [wrap(d, "• " + b, fb, W - 140)[:2] for b in bullets[:3]]
-    bullets_h = sum(len(lines) * 56 + 14 for lines in blocks)
-    free_top = max(y + 30, 380)
-    free_h = (H - 230) - free_top
-    offset = max(0, (free_h - (ph.size[1] + 40 + bullets_h)) // 2)
-    top = free_top + offset
     mask = Image.new("L", ph.size, 0)
-    ImageDraw.Draw(mask).rounded_rectangle((0, 0, ph.size[0], ph.size[1]), radius=36, fill=255)
-    canvas.paste(ph, ((W - ph.size[0]) // 2, top), mask)
-    y = top + ph.size[1] + 40
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, ph.size[0], ph.size[1]), radius=32, fill=255)
+    canvas.paste(ph, (px, photo_y + 8), mask)
 
-    # пункты
-    for lines in blocks:
-        for ln in lines:
-            d.text((70, y), ln, font=fb, fill="white")
-            y += 56
-        y += 14
+    # --- текст (всё по центру)
+    d = ImageDraw.Draw(canvas)
+    for i, ln in enumerate(t_lines):
+        d.text((W // 2, title_y + PAD + i * lh_t + lh_t // 2), ln, font=ft, fill="white", anchor="mm")
+    for by, ls in zip(bullet_ys, b_lines):
+        for i, ln in enumerate(ls):
+            d.text((W // 2, by + pad_b + i * lh_b + lh_b // 2), ln, font=fb, fill="white", anchor="mm")
 
-    # призыв в Telegram
-    d.rounded_rectangle((60, H - 200, W - 60, H - 70), radius=40, fill=(255, 196, 0))
     cta = f"Скачать в Telegram: {handle}" if handle else "Скачать бесплатно в Telegram"
     fs = 50
-    while fs > 30:
-        fc = ImageFont.truetype(FONT_BOLD, fs)
-        if d.textlength(cta, font=fc) <= W - 160:
+    while True:
+        fc = get_font("cta", fs)
+        if d.textlength(cta, font=fc) <= CW - 2 * PAD:
+            break
+        if fs <= 28:
+            if cta != handle and handle:   # слишком длинно: оставляем только имя канала
+                cta, fs = handle, 50
+                continue
             break
         fs -= 4
-    d.text((W // 2, H - 160), cta, font=fc, fill="black", anchor="mm")
-    d.text((W // 2, H - 105), "ссылка в шапке канала", font=ImageFont.truetype(FONT, 32),
-           fill="black", anchor="mm")
-    canvas.save(out_png)
+    d.text((W // 2, cta_y + 52), cta, font=fc, fill="black", anchor="mm")
+    d.text((W // 2, cta_y + 100), "ссылка в шапке канала", font=get_font("text", 30),
+           fill=(40, 40, 40), anchor="mm")
+    canvas.convert("RGB").save(out_png)
 
 
 # ---------- видео ----------
